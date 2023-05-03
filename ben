@@ -1,0 +1,309 @@
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, View, TouchableOpacity, Text, Alert, Image } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import { TextInput, Button } from 'react-native-paper';
+import ImagePicker from 'react-native-image-picker';
+import MapView, { Marker } from 'react-native-maps';
+import firebase from 'firebase/app';
+import 'firebase/auth';
+import 'firebase/database';
+
+const firebaseConfig = {
+  // Add your Firebase config here
+};
+
+if (!firebase.apps.length) {
+  firebase.initializeApp(firebaseConfig);
+}
+
+const Stack = createStackNavigator();
+
+const ProfileCreationScreen = ({ navigation }) => {
+  const [name, setName] = useState('');
+  const [age, setAge] = useState('');
+  const [gender, setGender] = useState('');
+  const [profilePicture, setProfilePicture] = useState(null);
+  const [zipCode, setZipCode] = useState('');
+  const [latitude, setLatitude] = useState(null);
+  const [longitude, setLongitude] = useState(null);
+
+  const handleSaveButtonPress = async () => {
+    try {
+      const profilesString = await AsyncStorage.getItem('profiles');
+      const profiles = profilesString ? JSON.parse(profilesString) : [];
+      profiles.push({ name, age, gender, profilePicture, zipCode, latitude, longitude });
+      await AsyncStorage.setItem('profiles', JSON.stringify(profiles));
+      Alert.alert('Success', 'Profile saved successfully!');
+      navigation.navigate('Main');
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const handleProfilePicturePress = () => {
+    const options = {
+      title: 'Select Profile Picture',
+      storageOptions: {
+        skipBackup: true,
+        path: 'images',
+      },
+    };
+
+    ImagePicker.showImagePicker(options, (response) => {
+      if (response.didCancel) {
+        console.log('User cancelled image picker');
+      } else if (response.error) {
+        console.log('ImagePicker Error: ', response.error);
+      } else {
+        setProfilePicture(response.uri);
+      }
+    });
+  };
+
+  const handleZipCodeBlur = async () => {
+    try {
+      const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${zipCode}`);
+      const data = await response.json();
+      const location = data.results[0].geometry.location;
+      setLatitude(location.lat);
+      setLongitude(location.lng);
+    } catch (error) {
+      Alert.alert('Error', 'Unable to get location from zip code');
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <TouchableOpacity style={styles.profilePictureContainer} onPress={handleProfilePicturePress}>
+        {profilePicture ? (
+          <Image source={{ uri: profilePicture }} style={styles.profilePicture} />
+        ) : (
+          <Text style={styles.profilePicturePlaceholder}>Select Profile Picture</Text>
+        )}
+      </TouchableOpacity>
+      <TextInput
+        label="Name"
+        value={name}
+        onChangeText={setName}
+        style={styles.input}
+      />
+      <TextInput
+        label="Age"
+        value={age}
+        onChangeText={setAge}
+        style={styles.input}
+        keyboardType="numeric"
+      />
+      <TextInput
+        label="Gender"
+        value={gender}
+        onChangeText={setGender}
+        style={styles.input}
+      />
+      <TextInput
+        label="Zip Code"
+        value={zipCode}
+        onChangeText={setZipCode}
+        onBlur={handleZipCodeBlur}
+        style={styles.input}
+        keyboardType="numeric"
+      />
+      <Button mode="contained" style={styles.saveButton} onPress={handleSaveButtonPress}>
+        Save
+      </Button>
+    </View>
+  );
+};
+
+const ChatScreen = ({ route }) => {
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState('');
+
+  const { uid, displayName } = firebase.auth().currentUser;
+  const { profile } = route.params;
+
+  const chatRef = firebase.database().ref(`chats/${uid}-${profile.uid}`);
+
+  const handleSendButtonPress = () => {
+    const message = {
+      text,
+      sender: uid,
+      receiver: profile.uid,
+      timestamp: firebase.database.ServerValue.TIMESTAMP,
+    };
+    chatRef.push(message);
+    setText('');
+  };
+
+  useEffect(() => {
+    chatRef.on('value', (snapshot) => {
+      const messagesObject = snapshot.val();
+      if (messagesObject) {
+        const messagesArray = Object.keys(messagesObject).map((key) => ({
+          ...messagesObject[key],
+          uid: key,
+        }));
+        setMessages(messagesArray);
+      } else {
+        setMessages([]);
+      }
+    });
+    return () => {
+      chatRef.off();
+    };
+  }, []);
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.chatContainer}>
+        {messages.map((message) => (
+          <View key={message.uid} style={message.sender === uid ? styles.sentMessageContainer : styles.receivedMessageContainer}>
+            <Text style={styles.messageText}>{message.text}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={styles.inputContainer}>
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          style={styles.messageInput}
+        />
+        <TouchableOpacity style={styles.sendButton} onPress={handleSendButtonPress}>
+          <Text style={styles.sendButtonText}>Send</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+const MyFeedScreen = () => {
+  const [profiles, setProfiles] = useState([]);
+  const [filter, setFilter] = useState('');
+
+  useEffect(() => {
+    const profilesRef = firebase.database().ref('profiles');
+    profilesRef.on('value', (snapshot) => {
+      const profilesObject = snapshot.val();
+      if (profilesObject) {
+        const profilesArray = Object.keys(profilesObject).map((key) => ({
+          ...profilesObject[key],
+          uid: key,
+        }));
+        setProfiles(profilesArray);
+      } else {
+        setProfiles([]);
+      }
+    });
+    return () => {
+      profilesRef.off();
+    };
+  }, []);
+
+  const handleFilterChange = (text) => {
+    setFilter(text);
+  };
+
+  const filteredProfiles = profiles.filter((profile) => {
+    const fullName = `${profile.firstName} ${profile.lastName}`;
+    return fullName.toLowerCase().includes(filter.toLowerCase());
+  });
+
+  const handleProfilePress = (profile) => {
+    navigation.navigate('Chat', { profile });
+  };
+
+  return (
+    <View style={styles.container}>
+      <TextInput
+        value={filter}
+        onChangeText={handleFilterChange}
+        style={styles.filterInput}
+        placeholder="Search profiles"
+      />
+      <FlatList
+        data={filteredProfiles}
+        renderItem={({ item }) => (
+          <TouchableOpacity style={styles.profileContainer} onPress={() => handleProfilePress(item)}>
+            <Image source={{ uri: item.profilePicture }} style={styles.profilePicture} />
+            <View style={styles.profileInfoContainer}>
+              <Text style={styles.profileName}>{`${item.firstName} ${item.lastName}`}</Text>
+              <Text style={styles.profileLocation}>{`${item.city}, ${item.state}`}</Text>
+            </View>
+          </TouchableOpacity>
+        )}
+        keyExtractor={(item) => item.uid}
+      />
+    </View>
+  );
+};
+
+const MainScreen = ({ navigation }) => {
+  const [user, setUser] = useState(null);
+
+  const handleSignInButtonPress = async () => {
+    try {
+      const result = await Google.logInAsync({
+        androidClientId: 'YOUR_ANDROID_CLIENT_ID',
+        iosClientId: 'YOUR_IOS_CLIENT_ID',
+        scopes: ['profile', 'email'],
+      });
+
+      if (result.type === 'success') {
+        const { idToken, accessToken } = result;
+        const credential = firebase.auth.GoogleAuthProvider.credential(idToken, accessToken);
+        await firebase.auth().signInWithCredential(credential);
+      } else {
+        console.log('Google login cancelled');
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  useEffect(() => {
+    firebase.auth().onAuthStateChanged((user) => {
+      setUser(user);
+      if (user) {
+        navigation.navigate('ProfileCreation');
+      }
+    });
+  }, []);
+
+  if (!user) {
+    return (
+      <View style={styles.container}>
+        <TouchableOpacity style={styles.signInButton} onPress={handleSignInButtonPress}>
+          <Text style={styles.signInButtonText}>Sign In with Google</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <TouchableOpacity style={styles.myFeedButton} onPress={() => navigation.navigate('MyFeed')}>
+        <Text style={styles.myFeedButtonText}>My Feed</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.signOutButton} onPress={() => firebase.auth().signOut()}>
+        <Text style={styles.signOutButtonText}>Sign Out</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+const App = () => {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator>
+        <Stack.Screen name="Main" component={MainScreen} />
+        <Stack.Screen name="ProfileCreation" component={ProfileCreationScreen} />
+        <Stack.Screen name="MyFeed" component={MyFeedScreen} />
+        <Stack.Screen name="Chat" component={ChatScreen} />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+};
+
+const styles
